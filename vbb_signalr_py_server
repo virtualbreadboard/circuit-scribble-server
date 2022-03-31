@@ -1,0 +1,131 @@
+import logging
+import sys
+import queue
+import base64
+import json
+import torch
+import torch.nn as nn
+import torchvision
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+from io import BytesIO
+from PIL import Image
+
+server_url = "http://localhost:55989/ChatHub" #replace with your signalR service
+ 
+
+## NEURAL NETWORK MODEL
+class Network(nn.Module):
+    def __init__(self):
+        super(Network, self).__init__()
+        
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=12, kernel_size=5, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(12)
+        self.conv2 = nn.Conv2d(in_channels=12, out_channels=12, kernel_size=5, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(12)
+        self.pool = nn.MaxPool2d(2,2)
+        self.conv4 = nn.Conv2d(in_channels=12, out_channels=24, kernel_size=5, stride=1, padding=1)
+        self.bn4 = nn.BatchNorm2d(24)
+        self.conv5 = nn.Conv2d(in_channels=24, out_channels=24, kernel_size=5, stride=1, padding=1)
+        self.bn5 = nn.BatchNorm2d(24)
+        self.fc1 = nn.Linear(24*10*10, 10)
+
+    def forward(self, input):
+        output = F.relu(self.bn1(self.conv1(input)))      
+        output = F.relu(self.bn2(self.conv2(output)))     
+        output = self.pool(output)                        
+        output = F.relu(self.bn4(self.conv4(output)))     
+        output = F.relu(self.bn5(self.conv5(output)))     
+        output = output.view(-1, 24*10*10)
+        output = self.fc1(output)
+
+        return output
+
+    
+transform = torchvision.transforms.Compose([
+                           transforms.Resize(32),
+                           torchvision.transforms.ToTensor()
+                           ])
+
+    #### TRYING TO SEND A MESSAGE
+def readb64(base64_string):
+    sbuf = BytesIO()
+    sbuf.write(base64.b64decode(base64_string))
+    pimg = Image.open(sbuf)
+    return pimg
+
+def image_loader(image):
+    image = transform(image).float()
+    image = image.unsqueeze(0) 
+    return image
+
+ 
+# SIGNAL-R SERVICE
+from signalrcore.hub_connection_builder import HubConnectionBuilder
+
+work = queue.Queue()
+ 
+def input_with_default(input_text, default_value):
+    value = input(input_text.format(default_value))
+    return default_value if value is None or value.strip() == "" else value
+
+
+
+username =   "xilinx server"
+handler = logging.StreamHandler()
+handler.setLevel(logging.DEBUG)
+hub_connection = HubConnectionBuilder()\
+    .with_url(server_url, options={"verify_ssl": False}) \
+    .configure_logging(logging.DEBUG, socket_trace=True, handler=handler) \
+    .with_automatic_reconnect({
+            "type": "interval",
+            "keep_alive_interval": 10,
+            "intervals": [1, 3, 5, 6, 7, 87, 3]
+        }).build()
+
+def classify(callbackUser):
+    work.put( callbackUser  )
+
+def registerServer():
+     hub_connection.send(  "RegisterClassifier", [ "Azure u250"] )
+ 
+hub_connection.on_open(registerServer)
+hub_connection.on_close(lambda: print("connection closed"))
+
+hub_connection.on("Classify", classify)
+hub_connection.start()
+message = None
+
+ 
+model = Network()
+path = "CircuitScribble.pth"
+model.load_state_dict(torch.load(path))
+
+label_count = 10
+# Do login
+
+while True:
+    todo = work.get(True,None) #wait forever until some image arrives to classify
+ 
+    img = readb64(todo[1])
+
+    #create loader from image
+    eval_loader = image_loader(img)
+ 
+    outputData = model(eval_loader)
+ 
+    predictions = outputData.data.numpy() #convert to Numpy array
+
+    b=["%.2f" % i for i in predictions]
+       
+    #send all probabilities
+    response = str(b)
+
+    #invoke classifier
+    hub_connection.send("ResponseClassification", [todo[0] , response ] )
+
+
+hub_connection.stop()
+
+sys.exit(0)

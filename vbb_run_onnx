@@ -1,0 +1,57 @@
+import onnxruntime  as ort
+import numpy as np
+import onnx
+from torchvision.datasets import CIFAR10
+from torchvision.transforms import transforms
+from torch.utils.data import DataLoader
+
+import torch
+
+classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+
+EP_list = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+
+
+batch_size = 10
+number_of_labels = 10 
+transformations = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
+onnx_model = onnx.load("ImageClassifier.onnx")
+onnx.checker.check_model(onnx_model)
+
+
+# Create an instance for testing, note that train is set to False.
+# When we run this code for the first time, the CIFAR10 test dataset will be downloaded locally. 
+test_set = CIFAR10(root="./data", train=False, transform=transformations, download=True)
+
+# Create a loader for the test set which will read the data within batch size and put into memory. 
+# Note that each shuffle is set to false for the test loader.
+test_loader = DataLoader(test_set, batch_size=10, shuffle=False, num_workers=0)
+print("The number of images in a test set is: ", len(test_loader)*batch_size)
+
+ort_sess = ort.InferenceSession('ImageClassifier.onnx', providers=EP_list)
+
+
+ort_sess.get_modelmeta()
+first_input_name = ort_sess.get_inputs()[0].name
+first_output_name = ort_sess.get_outputs()[0].name
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
+for data in test_loader:
+    images, labels = data
+
+    #images =  images.to(device)
+    outputs = ort_sess.run(["modelOutput" ],   {first_input_name: images.numpy()}  )
+    
+    
+
+    for i in range(batch_size):  
+        pred = outputs[0][i].argmax()
+        predicted = classes[pred];
+        actual =classes[ labels[i] ]
+    
+        print(f'Predicted: "{predicted}", Actual: "{actual}"')
